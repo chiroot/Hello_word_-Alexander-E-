@@ -110,8 +110,11 @@ SELECT * FROM users_audit;
 -- при необходимости (для проверки) принудительно запускаем экспорт данных из таблицы users_audit в формате csv
 --SELECT export_audit_to_csv();
 
-
-
+/*просмотр CSV файла в docker:
+1. docker exec -it postgres_db bash
+2. ls /tmp/users_audit_export_*.csv
+3. cat /tmp/users_audit_export_20251105_2141.CSV (выбираем соответствующее название файла)
+*/
 
 
 
