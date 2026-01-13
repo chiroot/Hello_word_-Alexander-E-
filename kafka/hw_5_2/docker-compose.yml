@@ -1,0 +1,105 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    ports:
+      - "5437:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Если у вас есть init-скрипт (создание таблицы user_logins и т.п.)
+      - ./sql/postgres_init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2182:2181"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bash -lc 'exec 3<>/dev/tcp/localhost/2181 && echo srvr >&3 && timeout 2 cat <&3 | grep -qi \"zookeeper version\"'",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    # ВАЖНО:
+    # - внутри docker-сети Kafka доступна как kafka:9092
+    # - с Windows/хоста Kafka доступна как localhost:9093 (как у вас в коде)
+    ports:
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # Два listener'а: внутренний и внешний
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # Можно оставить, но на него не рассчитываем — топик создаём явно через kafka-init
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # Явное создание топика user_logins (чтобы consumer не падал при старте)
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        kafka-topics --bootstrap-server kafka:9092 \
+          --create --if-not-exists \
+          --topic user_logins \
+          --partitions 1 --replication-factor 1
+    restart: "no"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    # ВАЖНО: consumer по умолчанию подключается к localhost:9008
+    ports:
+      - "8128:8123"
+      - "9008:9000"
+    environment:
+      CLICKHOUSE_USER: app
+      CLICKHOUSE_PASSWORD: app
+    volumes:
+      - ./sql/clickhouse_init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - chdata:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user app --password app --query 'SELECT 1' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  pgdata:
+  chdata:
